@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001';
 
 export interface WeatherData {
   temperature: number;
@@ -38,9 +38,20 @@ export interface WeatherStats {
   };
 }
 
+export interface DailyForecast {
+  date: string;
+  temperature_max: number;
+  temperature_min: number;
+  humidity: number;
+  wind_speed: number;
+  wind_direction: number;
+}
+
 export interface ApiResponse<T> {
   status: string;
   data: T;
+  city?: string;
+  cities?: string[];
 }
 
 const api = axios.create({
@@ -62,29 +73,55 @@ export const weatherApi = {
 
   /**
    * Get current weather data
+   * @param city - City name (default: Tokyo)
    */
-  async getCurrentWeather(): Promise<WeatherData> {
-    const response = await api.get<ApiResponse<WeatherData>>('/api/weather/current');
+  async getCurrentWeather(city: string = 'Tokyo'): Promise<WeatherData> {
+    const response = await api.get<ApiResponse<WeatherData>>('/api/weather/current', {
+      params: { city },
+    });
     return response.data.data;
   },
 
   /**
    * Get weather history
-   * @param limit - Number of historical records to retrieve (default: 100)
+   * @param city - City name (default: Tokyo)
+   * @param limit - Number of historical records to retrieve (default: 24)
    */
-  async getWeatherHistory(limit: number = 100): Promise<WeatherHistory> {
+  async getWeatherHistory(city: string = 'Tokyo', limit: number = 24): Promise<WeatherHistory> {
     const response = await api.get<ApiResponse<WeatherHistory>>('/api/weather/history', {
-      params: { limit },
+      params: { city, limit },
     });
     return response.data.data;
   },
 
   /**
    * Get weather statistics
+   * @param city - City name (default: Tokyo)
    */
-  async getWeatherStats(): Promise<WeatherStats> {
-    const response = await api.get<ApiResponse<WeatherStats>>('/api/weather/stats');
+  async getWeatherStats(city: string = 'Tokyo'): Promise<WeatherStats> {
+    const response = await api.get<ApiResponse<WeatherStats>>('/api/weather/stats', {
+      params: { city },
+    });
     return response.data.data;
+  },
+
+  /**
+   * Get 7-day weather forecast for a city
+   * @param city - City name
+   */
+  async getWeatherForecast(city: string = 'Tokyo'): Promise<DailyForecast[]> {
+    const response = await api.get<ApiResponse<DailyForecast[]>>('/api/weather/forecast', {
+      params: { city },
+    });
+    return response.data.data;
+  },
+
+  /**
+   * Get list of available cities
+   */
+  async getCities(): Promise<string[]> {
+    const response = await api.get<ApiResponse<string[]>>('/api/cities');
+    return response.data.cities || [];
   },
 };
 

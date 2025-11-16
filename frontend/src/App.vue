@@ -9,6 +9,14 @@
             Weather Dashboard
           </h1>
           <div class="header-info">
+            <div class="city-selector">
+              <label for="city-select">📍 City:</label>
+              <select id="city-select" v-model="selectedCity" @change="onCityChange" class="city-select">
+                <option v-for="city in cities" :key="city" :value="city">
+                  {{ city }}
+                </option>
+              </select>
+            </div>
             <span class="student-code">M24W0295</span>
             <div class="status-indicator" :class="{ connected: isConnected }">
               <span class="status-dot"></span>
@@ -112,6 +120,27 @@
               ]"
             />
           </div>
+
+          <!-- 7-Day Forecast -->
+          <div v-if="forecast.length > 0" class="forecast-section">
+            <h2 class="forecast-title">7-Day Weather Forecast - {{ selectedCity }}</h2>
+            <div class="forecast-grid">
+              <div v-for="day in forecast" :key="day.date" class="forecast-card">
+                <div class="forecast-date">{{ formatDate(day.date) }}</div>
+                <div class="forecast-temps">
+                  <span class="temp-max">{{ day.temperature_max.toFixed(1) }}°</span>
+                  <span class="temp-separator">/</span>
+                  <span class="temp-min">{{ day.temperature_min.toFixed(1) }}°</span>
+                </div>
+                <div class="forecast-detail">
+                  <span>💧 {{ day.humidity.toFixed(0) }}%</span>
+                </div>
+                <div class="forecast-detail">
+                  <span>💨 {{ day.wind_speed.toFixed(1) }} km/h</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </main>
@@ -129,7 +158,7 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import WeatherCard from './components/WeatherCard.vue';
 import WeatherChart from './components/WeatherChart.vue';
-import { weatherApi, type WeatherData, type WeatherHistory, type WeatherStats } from './services/weatherApi';
+import { weatherApi, type WeatherData, type WeatherHistory, type WeatherStats, type DailyForecast } from './services/weatherApi';
 
 const weatherData = ref<WeatherData | null>(null);
 const history = ref<WeatherHistory>({
@@ -139,6 +168,9 @@ const history = ref<WeatherHistory>({
   timestamps: [],
 });
 const stats = ref<WeatherStats | null>(null);
+const forecast = ref<DailyForecast[]>([]);
+const cities = ref<string[]>([]);
+const selectedCity = ref('Tokyo');
 const loading = ref(true);
 const error = ref<string | null>(null);
 const isConnected = ref(false);
@@ -171,9 +203,28 @@ function formatLastUpdated(timestamp: string): string {
   });
 }
 
+function formatDate(dateString: string): string {
+  const date = new Date(dateString);
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return 'Today';
+  } else if (date.toDateString() === tomorrow.toDateString()) {
+    return 'Tomorrow';
+  } else {
+    return date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric'
+    });
+  }
+}
+
 async function fetchCurrentWeather() {
   try {
-    weatherData.value = await weatherApi.getCurrentWeather();
+    weatherData.value = await weatherApi.getCurrentWeather(selectedCity.value);
     isConnected.value = true;
     error.value = null;
   } catch (err) {
@@ -187,7 +238,7 @@ async function fetchCurrentWeather() {
 
 async function fetchWeatherHistory() {
   try {
-    history.value = await weatherApi.getWeatherHistory(50);
+    history.value = await weatherApi.getWeatherHistory(selectedCity.value, 24);
   } catch (err) {
     console.error('Error fetching weather history:', err);
   }
@@ -195,9 +246,27 @@ async function fetchWeatherHistory() {
 
 async function fetchWeatherStats() {
   try {
-    stats.value = await weatherApi.getWeatherStats();
+    stats.value = await weatherApi.getWeatherStats(selectedCity.value);
   } catch (err) {
     console.error('Error fetching weather stats:', err);
+  }
+}
+
+async function fetchWeatherForecast() {
+  try {
+    forecast.value = await weatherApi.getWeatherForecast(selectedCity.value);
+  } catch (err) {
+    console.error('Error fetching weather forecast:', err);
+  }
+}
+
+async function fetchCities() {
+  try {
+    cities.value = await weatherApi.getCities();
+  } catch (err) {
+    console.error('Error fetching cities:', err);
+    // Fallback to default cities
+    cities.value = ['Tokyo', 'Kyoto', 'Osaka', 'Hokkaido', 'New Delhi', 'Beijing', 'Shanghai', 'New York', 'Frankfurt'];
   }
 }
 
@@ -206,6 +275,7 @@ async function fetchAllData() {
     fetchCurrentWeather(),
     fetchWeatherHistory(),
     fetchWeatherStats(),
+    fetchWeatherForecast(),
   ]);
   loading.value = false;
 }
@@ -216,13 +286,19 @@ async function retryConnection() {
   await fetchAllData();
 }
 
+async function onCityChange() {
+  // Fetch all data for the newly selected city
+  loading.value = true;
+  await fetchAllData();
+}
+
 function startAutoRefresh() {
-  // Refresh data every 2 seconds
+  // Refresh data every 30 seconds (Open-Meteo API doesn't update that frequently)
   refreshInterval = window.setInterval(async () => {
     await fetchCurrentWeather();
     await fetchWeatherHistory();
     await fetchWeatherStats();
-  }, 2000);
+  }, 30000);
 }
 
 function stopAutoRefresh() {
@@ -233,6 +309,7 @@ function stopAutoRefresh() {
 }
 
 onMounted(async () => {
+  await fetchCities();
   await fetchAllData();
   startAutoRefresh();
 });
@@ -290,6 +367,36 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 20px;
+  flex-wrap: wrap;
+}
+
+.city-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.city-select {
+  padding: 8px 12px;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.city-select:hover {
+  border-color: #667eea;
+}
+
+.city-select:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
 }
 
 .student-code {
@@ -423,6 +530,71 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
   gap: 24px;
+}
+
+/* Forecast Section */
+.forecast-section {
+  margin-top: 32px;
+}
+
+.forecast-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.forecast-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+}
+
+.forecast-card {
+  background: white;
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s;
+}
+
+.forecast-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+}
+
+.forecast-date {
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.forecast-temps {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.temp-max {
+  color: #ef4444;
+}
+
+.temp-separator {
+  color: #94a3b8;
+  margin: 0 4px;
+}
+
+.temp-min {
+  color: #3b82f6;
+}
+
+.forecast-detail {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 6px;
 }
 
 /* Footer */

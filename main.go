@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
-	"math"
-	"math/rand"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,84 +23,105 @@ type WeatherData struct {
 	Timestamp     string  `json:"timestamp"`
 }
 
+// OpenMeteoResponse represents the response from Open-Meteo API
+type OpenMeteoResponse struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Current   struct {
+		Time          string  `json:"time"`
+		Temperature   float64 `json:"temperature_2m"`
+		Humidity      float64 `json:"relative_humidity_2m"`
+		WindSpeed     float64 `json:"wind_speed_10m"`
+		WindDirection float64 `json:"wind_direction_10m"`
+	} `json:"current"`
+}
+
+// City represents a city with its coordinates
+type City struct {
+	Name      string
+	Latitude  float64
+	Longitude float64
+}
+
+var cities = map[string]City{
+	"Tokyo":       {Name: "Tokyo", Latitude: 35.6895, Longitude: 139.6917},
+	"Kyoto":       {Name: "Kyoto", Latitude: 35.0116, Longitude: 135.7681},
+	"Osaka":       {Name: "Osaka", Latitude: 34.6937, Longitude: 135.5023},
+	"Hokkaido":    {Name: "Hokkaido", Latitude: 43.0642, Longitude: 141.3469},
+	"New Delhi":   {Name: "New Delhi", Latitude: 28.6139, Longitude: 77.2090},
+	"Beijing":     {Name: "Beijing", Latitude: 39.9042, Longitude: 116.4074},
+	"Shanghai":    {Name: "Shanghai", Latitude: 31.2304, Longitude: 121.4737},
+	"New York":    {Name: "New York", Latitude: 40.7128, Longitude: -74.0060},
+	"Frankfurt":   {Name: "Frankfurt", Latitude: 50.1109, Longitude: 8.6821},
+}
+
 // Configuration constants
 const (
 	MQTTBroker        = "tcp://localhost:1883"
 	MQTTTopic         = "weather/data"
-	PublishInterval   = 2 * time.Second
-	ClientID          = "golang-weather-simulator"
+	PublishInterval   = 10 * time.Second // Fetch real data every 10 seconds
+	ClientID          = "golang-weather-provider"
+	DefaultCity       = "Tokyo"
+	OpenMeteoAPI      = "https://api.open-meteo.com/v1/forecast"
 )
 
-// Weather simulation ranges
-const (
-	TempMin        = 15.0
-	TempMax        = 35.0
-	HumidityMin    = 30.0
-	HumidityMax    = 90.0
-	WindSpeedMin   = 0.0
-	WindSpeedMax   = 30.0
-	WindDirMin     = 0.0
-	WindDirMax     = 360.0
-)
+var currentCity = DefaultCity
 
-var (
-	currentTemp   float64
-	currentHumid  float64
-	currentWSpeed float64
-	currentWDir   float64
-)
+// fetchWeatherFromOpenMeteo fetches real weather data from Open-Meteo API
+func fetchWeatherFromOpenMeteo(city City) (*WeatherData, error) {
+	url := fmt.Sprintf("%s?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
+		OpenMeteoAPI, city.Latitude, city.Longitude)
 
-// Initialize random values
-func init() {
-	rand.Seed(time.Now().UnixNano())
-	currentTemp = randomInRange(TempMin, TempMax)
-	currentHumid = randomInRange(HumidityMin, HumidityMax)
-	currentWSpeed = randomInRange(WindSpeedMin, WindSpeedMax)
-	currentWDir = randomInRange(WindDirMin, WindDirMax)
-}
-
-// randomInRange generates a random float64 between min and max
-func randomInRange(min, max float64) float64 {
-	return min + rand.Float64()*(max-min)
-}
-
-// smoothChange generates a gradual change in value
-func smoothChange(current, min, max, maxDelta float64) float64 {
-	delta := (rand.Float64() - 0.5) * maxDelta
-	newValue := current + delta
-
-	// Keep within bounds
-	if newValue < min {
-		newValue = min
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch weather data: %v", err)
 	}
-	if newValue > max {
-		newValue = max
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
 	}
 
-	return newValue
-}
+	var meteoResp OpenMeteoResponse
+	if err := json.Unmarshal(body, &meteoResp); err != nil {
+		return nil, fmt.Errorf("failed to parse weather data: %v", err)
+	}
 
-// generateWeatherData generates realistic weather data with smooth transitions
-func generateWeatherData() WeatherData {
-	// Generate smooth changes
-	currentTemp = smoothChange(currentTemp, TempMin, TempMax, 1.0)
-	currentHumid = smoothChange(currentHumid, HumidityMin, HumidityMax, 3.0)
-	currentWSpeed = smoothChange(currentWSpeed, WindSpeedMin, WindSpeedMax, 2.0)
-	currentWDir = smoothChange(currentWDir, WindDirMin, WindDirMax, 15.0)
-
-	// Round to 2 decimal places
-	temperature := math.Round(currentTemp*100) / 100
-	humidity := math.Round(currentHumid*100) / 100
-	windSpeed := math.Round(currentWSpeed*100) / 100
-	windDirection := math.Round(currentWDir*100) / 100
-
-	return WeatherData{
-		Temperature:   temperature,
-		Humidity:      humidity,
-		WindDirection: windDirection,
-		WindSpeed:     windSpeed,
+	weatherData := &WeatherData{
+		Temperature:   meteoResp.Current.Temperature,
+		Humidity:      meteoResp.Current.Humidity,
+		WindDirection: meteoResp.Current.WindDirection,
+		WindSpeed:     meteoResp.Current.WindSpeed,
 		Timestamp:     time.Now().Format(time.RFC3339),
 	}
+
+	return weatherData, nil
+}
+
+// generateWeatherData fetches real weather data from Open-Meteo API
+func generateWeatherData() WeatherData {
+	city, exists := cities[currentCity]
+	if !exists {
+		log.Printf("⚠ City %s not found, using default: %s", currentCity, DefaultCity)
+		city = cities[DefaultCity]
+		currentCity = DefaultCity
+	}
+
+	weatherData, err := fetchWeatherFromOpenMeteo(city)
+	if err != nil {
+		log.Printf("✗ Error fetching weather data: %v", err)
+		// Return dummy data on error
+		return WeatherData{
+			Temperature:   20.0,
+			Humidity:      50.0,
+			WindDirection: 0.0,
+			WindSpeed:     0.0,
+			Timestamp:     time.Now().Format(time.RFC3339),
+		}
+	}
+
+	return *weatherData
 }
 
 // MQTT message handler callbacks
@@ -130,8 +151,8 @@ func publishWeatherData(client mqtt.Client, data WeatherData) error {
 		return fmt.Errorf("failed to publish message: %v", token.Error())
 	}
 
-	log.Printf("📡 Published: Temp=%.2f°C, Humidity=%.2f%%, Wind=%.2fkm/h @ %.2f°",
-		data.Temperature, data.Humidity, data.WindSpeed, data.WindDirection)
+	log.Printf("📡 Published [%s]: Temp=%.2f°C, Humidity=%.2f%%, Wind=%.2fkm/h @ %.2f°",
+		currentCity, data.Temperature, data.Humidity, data.WindSpeed, data.WindDirection)
 
 	return nil
 }
@@ -154,11 +175,12 @@ func setupMQTTClient() mqtt.Client {
 
 func main() {
 	fmt.Println("============================================================")
-	fmt.Println("🌤️  Weather Dashboard - Golang MQTT Mock Data Server")
+	fmt.Println("🌤️  Weather Dashboard - Real Weather Data Provider")
 	fmt.Println("============================================================")
 	fmt.Printf("📡 MQTT Broker: %s\n", MQTTBroker)
 	fmt.Printf("📋 MQTT Topic: %s\n", MQTTTopic)
 	fmt.Printf("⏱️  Publish Interval: %v\n", PublishInterval)
+	fmt.Printf("🌍 Default City: %s\n", currentCity)
 	fmt.Println("============================================================")
 
 	// Setup MQTT client
@@ -178,7 +200,13 @@ func main() {
 	ticker := time.NewTicker(PublishInterval)
 	defer ticker.Stop()
 
-	log.Println("✓ Starting weather data simulation...")
+	log.Println("✓ Starting weather data fetching from Open-Meteo API...")
+
+	// Fetch and publish initial data immediately
+	weatherData := generateWeatherData()
+	if err := publishWeatherData(client, weatherData); err != nil {
+		log.Printf("✗ Error publishing data: %v", err)
+	}
 
 	for {
 		select {
